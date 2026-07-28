@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicIsize, Ordering},
         Mutex,
     },
     thread,
@@ -38,6 +38,24 @@ struct MirrorState {
     mirrored: AtomicBool,
     grayscale: AtomicBool,
     display_mode: Mutex<DisplayMode>,
+}
+
+#[cfg(target_os = "windows")]
+struct TaskbarOverlayState {
+    hwnd: AtomicIsize,
+    enabled: AtomicBool,
+    refresh_running: AtomicBool,
+}
+
+#[cfg(target_os = "windows")]
+impl Default for TaskbarOverlayState {
+    fn default() -> Self {
+        Self {
+            hwnd: AtomicIsize::new(0),
+            enabled: AtomicBool::new(false),
+            refresh_running: AtomicBool::new(false),
+        }
+    }
 }
 
 struct TrayControls {
@@ -171,7 +189,7 @@ fn get_taskbar_mirror_size() -> u32 {
     192
 }
 
-/// タスクバーと重ならない、右端に寄せた初期位置を返す。
+/// Task Bar Hero風オーバーレイとして、タスクバー右端の中に収める位置を返す。
 #[cfg(target_os = "windows")]
 #[tauri::command]
 fn get_taskbar_mirror_position(width: u32) -> SavedPosition {
@@ -184,11 +202,11 @@ fn get_taskbar_mirror_position(width: u32) -> SavedPosition {
         return if taskbar_width >= taskbar_height {
             SavedPosition {
                 x: right - width,
-                y: if top == 0 { bottom } else { top - height },
+                y: top,
             }
         } else {
             SavedPosition {
-                x: if left == 0 { right } else { left - width },
+                x: left,
                 y: bottom - height,
             }
         };
@@ -289,14 +307,87 @@ fn start_pointer_tracking(app: AppHandle) {
     });
 }
 
+#[cfg(target_os = "windows")]
+fn apply_taskbar_overlay(hwnd: isize) {
+    use windows_sys::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST,
+            SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            WS_EX_LAYERED, WS_EX_NOACTIVATE,
+        },
+    };
+
+    if hwnd == 0 {
+        return;
+    }
+    let hwnd = hwnd as HWND;
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let overlay_style = style | WS_EX_LAYERED as isize | WS_EX_NOACTIVATE as isize;
+    if overlay_style != style {
+        unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, overlay_style) };
+    }
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS,
+        )
+    };
+}
+
+#[cfg(target_os = "windows")]
+fn start_taskbar_overlay_refresh(app: AppHandle) {
+    let Some(overlay) = app.try_state::<TaskbarOverlayState>() else {
+        return;
+    };
+    overlay.enabled.store(true, Ordering::SeqCst);
+    apply_taskbar_overlay(overlay.hwnd.load(Ordering::SeqCst));
+
+    if overlay.refresh_running.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    thread::spawn(move || loop {
+        let Some(overlay) = app.try_state::<TaskbarOverlayState>() else {
+            return;
+        };
+        if !overlay.enabled.load(Ordering::SeqCst) {
+            overlay.refresh_running.store(false, Ordering::SeqCst);
+            return;
+        }
+        apply_taskbar_overlay(overlay.hwnd.load(Ordering::SeqCst));
+        thread::sleep(Duration::from_millis(200));
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn stop_taskbar_overlay_refresh(app: &AppHandle) {
+    if let Some(overlay) = app.try_state::<TaskbarOverlayState>() {
+        overlay.enabled.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_taskbar_overlay_refresh(_app: AppHandle) {}
+
+#[cfg(not(target_os = "windows"))]
+fn stop_taskbar_overlay_refresh(_app: &AppHandle) {}
+
 fn show_mirror_window(app: &AppHandle) {
     if let Ok(window) = mirror_window(app) {
         let _ = window.show();
+        let _ = window.set_ignore_cursor_events(true);
     }
+    start_taskbar_overlay_refresh(app.clone());
     let _ = app.emit_to(MIRROR_LABEL, "mirror:show", ());
 }
 
 fn hide_mirror_window(app: &AppHandle) {
+    stop_taskbar_overlay_refresh(app);
     if let Ok(window) = mirror_window(app) {
         if let Ok(position) = window.outer_position() {
             let _ = app.emit_to(
@@ -457,6 +548,16 @@ pub fn run() {
         )
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            {
+                let overlay = TaskbarOverlayState::default();
+                if let Some(window) = app.get_webview_window(MIRROR_LABEL) {
+                    if let Ok(hwnd) = window.hwnd() {
+                        overlay.hwnd.store(hwnd.0 as isize, Ordering::SeqCst);
+                    }
+                }
+                app.manage(overlay);
+            }
             let mirror_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
             app.global_shortcut().register(mirror_shortcut)?;
 

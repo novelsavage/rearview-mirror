@@ -29,7 +29,7 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 const SIZE_DEFAULT_VERSION = 4;
-const LAYOUT_VERSION = 6;
+const LAYOUT_VERSION = 7;
 
 let store: Store;
 let activeStream: MediaStream | undefined;
