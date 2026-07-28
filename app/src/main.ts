@@ -10,7 +10,9 @@ type Settings = {
   grayscale: boolean;
   size: number;
   sizeDefaultVersion: number;
+  layoutVersion: number;
   moveEnabled: boolean;
+  toggleMode: boolean;
   position?: { x: number; y: number };
 };
 
@@ -20,7 +22,9 @@ const DEFAULT_SETTINGS: Settings = {
   grayscale: false,
   size: 192,
   sizeDefaultVersion: 4,
+  layoutVersion: 5,
   moveEnabled: true,
+  toggleMode: false,
 };
 
 let store: Store;
@@ -49,6 +53,13 @@ async function loadSettings(): Promise<void> {
       width: settings.size,
     });
     settings.sizeDefaultVersion = DEFAULT_SETTINGS.sizeDefaultVersion;
+  }
+  // タスクバーの中に配置していた試作版だけ、タスクバー脇の安全な位置へ移行する。
+  if ((savedSettings?.layoutVersion ?? 0) < DEFAULT_SETTINGS.layoutVersion) {
+    settings.position = await invoke<{ x: number; y: number }>("get_taskbar_mirror_position", {
+      width: settings.size,
+    });
+    settings.layoutVersion = DEFAULT_SETTINGS.layoutVersion;
   }
   await saveSettings();
 }
@@ -127,10 +138,11 @@ function renderMirror(): void {
     }
   });
 
-  void listen<{ mirrored: boolean; grayscale: boolean; move_enabled: boolean }>("mirror:tray-options", (event) => {
+  void listen<{ mirrored: boolean; grayscale: boolean; move_enabled: boolean; toggle_mode: boolean }>("mirror:tray-options", (event) => {
     settings.mirrored = event.payload.mirrored;
     settings.grayscale = event.payload.grayscale;
     settings.moveEnabled = event.payload.move_enabled;
+    settings.toggleMode = event.payload.toggle_mode;
     applyVisualSettings();
   });
 
@@ -145,7 +157,7 @@ function renderMirror(): void {
 function renderSettings(): void {
   document.body.innerHTML = `
     <main class="settings">
-      <header><h1>Rearview Mirror</h1><p>長押し: <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd>　トグル: 長押し中に <kbd>Enter</kbd></p></header>
+      <header><h1>Rearview Mirror</h1><p><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd> で表示します。</p></header>
       <fieldset>
         <legend>カメラ</legend>
         <label>使用するカメラ
@@ -168,7 +180,8 @@ function renderSettings(): void {
         <label class="check"><input id="mirror-toggle" type="checkbox" /> 左右を反転する</label>
         <label class="check"><input id="grayscale-toggle" type="checkbox" /> 白黒で表示する</label>
         <label class="check"><input id="move-toggle" type="checkbox" /> ショートカット中のマウス移動で位置を変える</label>
-        <button id="reset-position" class="secondary" type="button">位置をタスクバー内に戻す</button>
+        <label class="check"><input id="toggle-mode" type="checkbox" /> ショートカットを切替表示にする</label>
+        <button id="reset-position" class="secondary" type="button">位置をタスクバー脇に戻す</button>
       </fieldset>
       <footer>普段の切替はタスクトレイから行えます。</footer>
     </main>`;
@@ -179,6 +192,7 @@ function renderSettings(): void {
   const mirrorToggle = document.querySelector<HTMLInputElement>("#mirror-toggle")!;
   const grayscaleToggle = document.querySelector<HTMLInputElement>("#grayscale-toggle")!;
   const moveToggle = document.querySelector<HTMLInputElement>("#move-toggle")!;
+  const toggleMode = document.querySelector<HTMLInputElement>("#toggle-mode")!;
 
   const syncForm = (): void => {
     sizeRange.value = String(settings.size);
@@ -186,6 +200,7 @@ function renderSettings(): void {
     mirrorToggle.checked = settings.mirrored;
     grayscaleToggle.checked = settings.grayscale;
     moveToggle.checked = settings.moveEnabled;
+    toggleMode.checked = settings.toggleMode;
     cameraSelect.value = settings.cameraId;
   };
 
@@ -238,6 +253,11 @@ function renderSettings(): void {
     await saveSettings();
     await notifyMirrorSettingsChanged();
   });
+  toggleMode.addEventListener("change", async () => {
+    settings.toggleMode = toggleMode.checked;
+    await invoke("set_toggle_mode", { enabled: settings.toggleMode });
+    await saveSettings();
+  });
   document.querySelector("#reset-position")?.addEventListener("click", async () => {
     settings.position = await invoke<{ x: number; y: number }>("get_taskbar_mirror_position", {
       width: settings.size,
@@ -246,10 +266,11 @@ function renderSettings(): void {
     await saveSettings();
   });
 
-  void listen<{ mirrored: boolean; grayscale: boolean; move_enabled: boolean }>("settings:tray-options", async (event) => {
+  void listen<{ mirrored: boolean; grayscale: boolean; move_enabled: boolean; toggle_mode: boolean }>("settings:tray-options", async (event) => {
     settings.mirrored = event.payload.mirrored;
     settings.grayscale = event.payload.grayscale;
     settings.moveEnabled = event.payload.move_enabled;
+    settings.toggleMode = event.payload.toggle_mode;
     syncForm();
     await saveSettings();
   });
@@ -268,6 +289,7 @@ async function main(): Promise<void> {
     }
     await invoke("set_mirror_size", { longestEdge: settings.size });
     await invoke("set_move_enabled", { enabled: settings.moveEnabled });
+    await invoke("set_toggle_mode", { enabled: settings.toggleMode });
     await notifyMirrorSettingsChanged();
     renderMirror();
   } else {

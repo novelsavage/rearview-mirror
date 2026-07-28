@@ -32,6 +32,7 @@ const MIRROR_ASPECT_RATIO: f64 = 4.0;
 struct MirrorState {
     shortcut_held: AtomicBool,
     move_enabled: AtomicBool,
+    toggle_mode: AtomicBool,
     mirrored: AtomicBool,
     grayscale: AtomicBool,
     display_mode: Mutex<DisplayMode>,
@@ -49,6 +50,7 @@ impl Default for MirrorState {
         Self {
             shortcut_held: AtomicBool::new(false),
             move_enabled: AtomicBool::new(true),
+            toggle_mode: AtomicBool::new(false),
             mirrored: AtomicBool::new(true),
             grayscale: AtomicBool::new(false),
             display_mode: Mutex::new(DisplayMode::Hidden),
@@ -73,6 +75,7 @@ struct TrayOptions {
     mirrored: bool,
     grayscale: bool,
     move_enabled: bool,
+    toggle_mode: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -95,6 +98,11 @@ fn taskbar_bounds() -> Option<(i32, i32, i32, i32)> {
 #[tauri::command]
 fn set_move_enabled(state: State<'_, MirrorState>, enabled: bool) {
     state.move_enabled.store(enabled, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn set_toggle_mode(state: State<'_, MirrorState>, enabled: bool) {
+    state.toggle_mode.store(enabled, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -132,7 +140,7 @@ fn get_taskbar_mirror_size() -> u32 {
     192
 }
 
-/// タスクバーの右端にミラーを収める初期位置を返す。
+/// タスクバーと重ならない、右端に寄せた初期位置を返す。
 #[cfg(target_os = "windows")]
 #[tauri::command]
 fn get_taskbar_mirror_position(width: u32) -> SavedPosition {
@@ -145,11 +153,11 @@ fn get_taskbar_mirror_position(width: u32) -> SavedPosition {
         return if taskbar_width >= taskbar_height {
             SavedPosition {
                 x: right - width,
-                y: top,
+                y: if top == 0 { bottom } else { top - height },
             }
         } else {
             SavedPosition {
-                x: left,
+                x: if left == 0 { right } else { left - width },
                 y: bottom - height,
             }
         };
@@ -333,16 +341,6 @@ fn toggle_mirror(app: &AppHandle) {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn space_key_is_held() -> bool {
-    (unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x20) }) < 0
-}
-
-#[cfg(not(target_os = "windows"))]
-fn space_key_is_held() -> bool {
-    false
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -354,20 +352,17 @@ pub fn run() {
                         Some(Modifiers::CONTROL | Modifiers::ALT),
                         Code::Space,
                     );
-                    let toggle_shortcut = Shortcut::new(
-                        Some(Modifiers::CONTROL | Modifiers::ALT),
-                        Code::Enter,
-                    );
                     if shortcut == &hold_shortcut {
-                        match event.state() {
-                            ShortcutState::Pressed => show_held_mirror(app),
-                            ShortcutState::Released => release_held_mirror(app),
+                        if app.state::<MirrorState>().toggle_mode.load(Ordering::SeqCst) {
+                            if event.state() == ShortcutState::Pressed {
+                                toggle_mirror(app);
+                            }
+                        } else {
+                            match event.state() {
+                                ShortcutState::Pressed => show_held_mirror(app),
+                                ShortcutState::Released => release_held_mirror(app),
+                            }
                         }
-                    } else if shortcut == &toggle_shortcut
-                        && event.state() == ShortcutState::Pressed
-                        && space_key_is_held()
-                    {
-                        toggle_mirror(app);
                     }
                 })
                 .build(),
@@ -376,8 +371,6 @@ pub fn run() {
         .setup(|app| {
             let mirror_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
             app.global_shortcut().register(mirror_shortcut)?;
-            let toggle_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Enter);
-            app.global_shortcut().register(toggle_shortcut)?;
 
             let is_first_launch = app
                 .path()
@@ -397,19 +390,21 @@ pub fn run() {
             let mirrored_item = CheckMenuItem::with_id(app, "mirrored", "左右を反転", true, true, None::<&str>)?;
             let grayscale_item = CheckMenuItem::with_id(app, "grayscale", "白黒で表示", true, false, None::<&str>)?;
             let move_item = CheckMenuItem::with_id(app, "move", "マウス移動を有効にする", true, true, None::<&str>)?;
+            let toggle_mode_item = CheckMenuItem::with_id(app, "toggle-mode", "ショートカットを切替表示にする", true, false, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "カメラ・サイズ設定…", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle_item, &mirrored_item, &grayscale_item, &move_item, &settings_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&toggle_item, &mirrored_item, &grayscale_item, &move_item, &toggle_mode_item, &settings_item, &quit_item])?;
             let mirrored_item_for_event = mirrored_item.clone();
             let grayscale_item_for_event = grayscale_item.clone();
             let move_item_for_event = move_item.clone();
+            let toggle_mode_item_for_event = toggle_mode_item.clone();
             TrayIconBuilder::with_id("rearview-mirror-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Rearview Mirror")
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "toggle" => toggle_mirror(app),
-                    "mirrored" | "grayscale" | "move" => {
+                    "mirrored" | "grayscale" | "move" | "toggle-mode" => {
                         let state = app.state::<MirrorState>();
                         if event.id.as_ref() == "mirrored" {
                             let checked = !state.mirrored.fetch_xor(true, Ordering::SeqCst);
@@ -417,14 +412,18 @@ pub fn run() {
                         } else if event.id.as_ref() == "grayscale" {
                             let checked = !state.grayscale.fetch_xor(true, Ordering::SeqCst);
                             let _ = grayscale_item_for_event.set_checked(checked);
-                        } else {
+                        } else if event.id.as_ref() == "move" {
                             let checked = !state.move_enabled.fetch_xor(true, Ordering::SeqCst);
                             let _ = move_item_for_event.set_checked(checked);
+                        } else {
+                            let checked = !state.toggle_mode.fetch_xor(true, Ordering::SeqCst);
+                            let _ = toggle_mode_item_for_event.set_checked(checked);
                         }
                         let options = TrayOptions {
                             mirrored: state.mirrored.load(Ordering::SeqCst),
                             grayscale: state.grayscale.load(Ordering::SeqCst),
                             move_enabled: state.move_enabled.load(Ordering::SeqCst),
+                            toggle_mode: state.toggle_mode.load(Ordering::SeqCst),
                         };
                         let _ = app.emit_to(MIRROR_LABEL, "mirror:tray-options", options.clone());
                         let _ = app.emit_to(SETTINGS_LABEL, "settings:tray-options", options);
@@ -439,6 +438,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             set_move_enabled,
+            set_toggle_mode,
             set_display_options,
             set_mirror_size,
             get_taskbar_mirror_size,
