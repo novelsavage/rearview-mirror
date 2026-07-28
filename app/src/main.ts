@@ -16,8 +16,8 @@ type Settings = {
 const DEFAULT_SETTINGS: Settings = {
   cameraId: "",
   mirrored: true,
-  size: 180,
-  sizeDefaultVersion: 2,
+  size: 85,
+  sizeDefaultVersion: 3,
   moveEnabled: true,
 };
 
@@ -40,9 +40,10 @@ async function loadSettings(): Promise<void> {
     ...DEFAULT_SETTINGS,
     ...savedSettings,
   };
-  // v0.1.0 の初期値 600px を使っていた試作版だけ、新しい小型初期値へ移行する。
-  if (!savedSettings?.sizeDefaultVersion && savedSettings?.size === 600) {
-    settings.size = DEFAULT_SETTINGS.size;
+  // 試作版の固定サイズから、実際のタスクバーの高さに合わせる初期値へ移行する。
+  if ((savedSettings?.sizeDefaultVersion ?? 0) < DEFAULT_SETTINGS.sizeDefaultVersion) {
+    settings.size = await invoke<number>("get_taskbar_mirror_size");
+    settings.sizeDefaultVersion = DEFAULT_SETTINGS.sizeDefaultVersion;
   }
   await saveSettings();
 }
@@ -122,13 +123,13 @@ function renderSettings(): void {
       <section>
         <h2>ミラー</h2>
         <label>長辺 <output id="size-value"></output> px
-          <input id="size-range" type="range" min="120" max="1000" step="10" />
+          <input id="size-range" type="range" min="64" max="1000" step="10" />
         </label>
         <div class="presets" aria-label="サイズプリセット">
+          <button type="button" data-size="64">64</button>
+          <button type="button" data-size="85">85</button>
           <button type="button" data-size="120">120</button>
           <button type="button" data-size="180">180</button>
-          <button type="button" data-size="240">240</button>
-          <button type="button" data-size="320">320</button>
         </div>
         <label class="check"><input id="mirror-toggle" type="checkbox" /> 左右を反転する</label>
         <label class="check"><input id="move-toggle" type="checkbox" /> ショートカット中のマウス移動で位置を変える</label>

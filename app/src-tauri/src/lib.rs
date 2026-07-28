@@ -14,7 +14,13 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
+use windows_sys::Win32::{
+    Foundation::POINT,
+    UI::{
+        Shell::{SHAppBarMessage, ABM_GETTASKBARPOS, APPBARDATA},
+        WindowsAndMessaging::GetCursorPos,
+    },
+};
 
 const MIRROR_LABEL: &str = "mirror";
 const SETTINGS_LABEL: &str = "settings";
@@ -46,11 +52,34 @@ fn set_move_enabled(state: State<'_, MirrorState>, enabled: bool) {
 
 #[tauri::command]
 fn set_mirror_size(app: AppHandle, longest_edge: u32) -> Result<(), String> {
-    let width = longest_edge.clamp(120, 1000);
+    let width = longest_edge.clamp(64, 1000);
     let height = (width as f64 * 9.0 / 16.0).round() as u32;
     mirror_window(&app)?
         .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(width, height)))
         .map_err(|error| error.to_string())
+}
+
+/// 16:9 のミラーの短辺が、Windows タスクバーの厚みと等しくなる長辺を返す。
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn get_taskbar_mirror_size() -> u32 {
+    let mut taskbar = unsafe { std::mem::zeroed::<APPBARDATA>() };
+    taskbar.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+
+    if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut taskbar) } != 0 {
+        let width = (taskbar.rc.right - taskbar.rc.left).unsigned_abs();
+        let height = (taskbar.rc.bottom - taskbar.rc.top).unsigned_abs();
+        let taskbar_thickness = width.min(height);
+        return (taskbar_thickness.saturating_mul(16) / 9).clamp(64, 1000);
+    }
+
+    85
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn get_taskbar_mirror_size() -> u32 {
+    85
 }
 
 #[tauri::command]
@@ -216,6 +245,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_move_enabled,
             set_mirror_size,
+            get_taskbar_mirror_size,
             set_mirror_position
         ])
         .on_window_event(|window, event| {
