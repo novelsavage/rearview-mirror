@@ -1,0 +1,19 @@
+# フロントエンドの依存関係・生成物
+app/node_modules/
+app/dist/
+
+# Rust/Tauri の生成物（exe、インストーラーを含む）
+app/src-tauri/target/
+
+# ローカル環境だけで使う設定
+.env
+.env.*
+!.env.example
+*.local
+
+# ログ・エディタ・OS の一時ファイル
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
