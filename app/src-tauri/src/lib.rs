@@ -38,6 +38,13 @@ struct MirrorState {
     display_mode: Mutex<DisplayMode>,
 }
 
+struct TrayControls {
+    mirrored: CheckMenuItem<tauri::Wry>,
+    grayscale: CheckMenuItem<tauri::Wry>,
+    move_enabled: CheckMenuItem<tauri::Wry>,
+    toggle_mode: CheckMenuItem<tauri::Wry>,
+}
+
 #[derive(PartialEq)]
 enum DisplayMode {
     Hidden,
@@ -50,7 +57,7 @@ impl Default for MirrorState {
         Self {
             shortcut_held: AtomicBool::new(false),
             move_enabled: AtomicBool::new(true),
-            toggle_mode: AtomicBool::new(false),
+            toggle_mode: AtomicBool::new(true),
             mirrored: AtomicBool::new(true),
             grayscale: AtomicBool::new(false),
             display_mode: Mutex::new(DisplayMode::Hidden),
@@ -96,19 +103,39 @@ fn taskbar_bounds() -> Option<(i32, i32, i32, i32)> {
 }
 
 #[tauri::command]
-fn set_move_enabled(state: State<'_, MirrorState>, enabled: bool) {
+fn set_move_enabled(app: AppHandle, state: State<'_, MirrorState>, enabled: bool) {
     state.move_enabled.store(enabled, Ordering::SeqCst);
+    sync_tray_controls(&app, &state);
 }
 
 #[tauri::command]
-fn set_toggle_mode(state: State<'_, MirrorState>, enabled: bool) {
+fn set_toggle_mode(app: AppHandle, state: State<'_, MirrorState>, enabled: bool) {
     state.toggle_mode.store(enabled, Ordering::SeqCst);
+    sync_tray_controls(&app, &state);
 }
 
 #[tauri::command]
-fn set_display_options(state: State<'_, MirrorState>, options: DisplayOptions) {
+fn set_display_options(app: AppHandle, state: State<'_, MirrorState>, options: DisplayOptions) {
     state.mirrored.store(options.mirrored, Ordering::SeqCst);
     state.grayscale.store(options.grayscale, Ordering::SeqCst);
+    sync_tray_controls(&app, &state);
+}
+
+fn sync_tray_controls(app: &AppHandle, state: &MirrorState) {
+    if let Some(controls) = app.try_state::<TrayControls>() {
+        let _ = controls
+            .mirrored
+            .set_checked(state.mirrored.load(Ordering::SeqCst));
+        let _ = controls
+            .grayscale
+            .set_checked(state.grayscale.load(Ordering::SeqCst));
+        let _ = controls
+            .move_enabled
+            .set_checked(state.move_enabled.load(Ordering::SeqCst));
+        let _ = controls
+            .toggle_mode
+            .set_checked(state.toggle_mode.load(Ordering::SeqCst));
+    }
 }
 
 #[tauri::command]
@@ -390,7 +417,7 @@ pub fn run() {
             let mirrored_item = CheckMenuItem::with_id(app, "mirrored", "左右を反転", true, true, None::<&str>)?;
             let grayscale_item = CheckMenuItem::with_id(app, "grayscale", "白黒で表示", true, false, None::<&str>)?;
             let move_item = CheckMenuItem::with_id(app, "move", "マウス移動を有効にする", true, true, None::<&str>)?;
-            let toggle_mode_item = CheckMenuItem::with_id(app, "toggle-mode", "ショートカットを切替表示にする", true, false, None::<&str>)?;
+            let toggle_mode_item = CheckMenuItem::with_id(app, "toggle-mode", "ショートカットを切替表示にする", true, true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "カメラ・サイズ設定…", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&toggle_item, &mirrored_item, &grayscale_item, &move_item, &toggle_mode_item, &settings_item, &quit_item])?;
@@ -398,6 +425,12 @@ pub fn run() {
             let grayscale_item_for_event = grayscale_item.clone();
             let move_item_for_event = move_item.clone();
             let toggle_mode_item_for_event = toggle_mode_item.clone();
+            app.manage(TrayControls {
+                mirrored: mirrored_item.clone(),
+                grayscale: grayscale_item.clone(),
+                move_enabled: move_item.clone(),
+                toggle_mode: toggle_mode_item.clone(),
+            });
             TrayIconBuilder::with_id("rearview-mirror-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Rearview Mirror")

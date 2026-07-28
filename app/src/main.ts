@@ -20,11 +20,12 @@ const DEFAULT_SETTINGS: Settings = {
   cameraId: "",
   mirrored: true,
   grayscale: false,
-  size: 192,
-  sizeDefaultVersion: 4,
-  layoutVersion: 5,
+  // 初回だけ実機のタスクバー高から上書きするため、バージョンは未適用としておく。
+  size: 240,
+  sizeDefaultVersion: 0,
+  layoutVersion: 0,
   moveEnabled: true,
-  toggleMode: false,
+  toggleMode: true,
 };
 
 let store: Store;
