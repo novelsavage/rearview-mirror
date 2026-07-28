@@ -308,7 +308,7 @@ fn start_pointer_tracking(app: AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_taskbar_overlay(hwnd: isize) {
+fn apply_taskbar_overlay(hwnd: isize, refresh_frame: bool) {
     use windows_sys::Win32::{
         Foundation::HWND,
         UI::WindowsAndMessaging::{
@@ -327,6 +327,10 @@ fn apply_taskbar_overlay(hwnd: isize) {
     if overlay_style != style {
         unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, overlay_style) };
     }
+    let mut flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS;
+    if refresh_frame {
+        flags |= SWP_FRAMECHANGED;
+    }
     unsafe {
         SetWindowPos(
             hwnd,
@@ -335,7 +339,7 @@ fn apply_taskbar_overlay(hwnd: isize) {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS,
+            flags,
         )
     };
 }
@@ -346,7 +350,8 @@ fn start_taskbar_overlay_refresh(app: AppHandle) {
         return;
     };
     overlay.enabled.store(true, Ordering::SeqCst);
-    apply_taskbar_overlay(overlay.hwnd.load(Ordering::SeqCst));
+    // ウィンドウスタイルを変えた直後だけ、非クライアント領域を再計算する。
+    apply_taskbar_overlay(overlay.hwnd.load(Ordering::SeqCst), true);
 
     if overlay.refresh_running.swap(true, Ordering::SeqCst) {
         return;
@@ -359,8 +364,9 @@ fn start_taskbar_overlay_refresh(app: AppHandle) {
             overlay.refresh_running.store(false, Ordering::SeqCst);
             return;
         }
-        apply_taskbar_overlay(overlay.hwnd.load(Ordering::SeqCst));
-        thread::sleep(Duration::from_millis(200));
+        // 定期処理はz-orderだけを静かに再適用する。映像や枠の再描画は発生させない。
+        apply_taskbar_overlay(overlay.hwnd.load(Ordering::SeqCst), false);
+        thread::sleep(Duration::from_secs(1));
     });
 }
 
