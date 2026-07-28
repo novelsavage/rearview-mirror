@@ -28,6 +28,9 @@ const DEFAULT_SETTINGS: Settings = {
   toggleMode: true,
 };
 
+const SIZE_DEFAULT_VERSION = 4;
+const LAYOUT_VERSION = 6;
+
 let store: Store;
 let activeStream: MediaStream | undefined;
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -48,19 +51,19 @@ async function loadSettings(): Promise<void> {
     ...savedSettings,
   };
   // 試作版の固定サイズから、タスクバー高に合わせた横長ミラーへ移行する。
-  if ((savedSettings?.sizeDefaultVersion ?? 0) < DEFAULT_SETTINGS.sizeDefaultVersion) {
+  if ((savedSettings?.sizeDefaultVersion ?? 0) < SIZE_DEFAULT_VERSION) {
     settings.size = await invoke<number>("get_taskbar_mirror_size");
     settings.position = await invoke<{ x: number; y: number }>("get_taskbar_mirror_position", {
       width: settings.size,
     });
-    settings.sizeDefaultVersion = DEFAULT_SETTINGS.sizeDefaultVersion;
+    settings.sizeDefaultVersion = SIZE_DEFAULT_VERSION;
   }
   // タスクバーの中に配置していた試作版だけ、タスクバー脇の安全な位置へ移行する。
-  if ((savedSettings?.layoutVersion ?? 0) < DEFAULT_SETTINGS.layoutVersion) {
+  if ((savedSettings?.layoutVersion ?? 0) < LAYOUT_VERSION) {
     settings.position = await invoke<{ x: number; y: number }>("get_taskbar_mirror_position", {
       width: settings.size,
     });
-    settings.layoutVersion = DEFAULT_SETTINGS.layoutVersion;
+    settings.layoutVersion = LAYOUT_VERSION;
   }
   await saveSettings();
 }
