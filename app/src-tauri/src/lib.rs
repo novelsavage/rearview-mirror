@@ -31,6 +31,8 @@ const MIRROR_ASPECT_RATIO: f64 = 4.0;
 
 struct MirrorState {
     shortcut_held: AtomicBool,
+    moved_while_shortcut_held: AtomicBool,
+    toggle_press_started_visible: AtomicBool,
     move_enabled: AtomicBool,
     toggle_mode: AtomicBool,
     mirrored: AtomicBool,
@@ -56,6 +58,8 @@ impl Default for MirrorState {
     fn default() -> Self {
         Self {
             shortcut_held: AtomicBool::new(false),
+            moved_while_shortcut_held: AtomicBool::new(false),
+            toggle_press_started_visible: AtomicBool::new(false),
             move_enabled: AtomicBool::new(true),
             toggle_mode: AtomicBool::new(true),
             mirrored: AtomicBool::new(true),
@@ -271,6 +275,9 @@ fn start_pointer_tracking(app: AppHandle) {
                 let dy = cursor.y - start_cursor.y;
                 if moved_past_dead_zone || dx * dx + dy * dy >= 16 {
                     moved_past_dead_zone = true;
+                    app.state::<MirrorState>()
+                        .moved_while_shortcut_held
+                        .store(true, Ordering::SeqCst);
                     let _ = window.set_position(Position::Physical(PhysicalPosition::new(
                         start_window.x + dx,
                         start_window.y + dy,
@@ -368,6 +375,59 @@ fn toggle_mirror(app: &AppHandle) {
     }
 }
 
+fn press_toggle_shortcut(app: &AppHandle) {
+    let state = app.state::<MirrorState>();
+    let (should_show, started_visible) = {
+        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        match *mode {
+            DisplayMode::Hidden => {
+                *mode = DisplayMode::Toggled;
+                (true, false)
+            }
+            DisplayMode::Toggled => (false, true),
+            DisplayMode::Held => {
+                *mode = DisplayMode::Toggled;
+                (false, true)
+            }
+        }
+    };
+
+    state.shortcut_held.store(true, Ordering::SeqCst);
+    state
+        .moved_while_shortcut_held
+        .store(false, Ordering::SeqCst);
+    state
+        .toggle_press_started_visible
+        .store(started_visible, Ordering::SeqCst);
+
+    if should_show {
+        show_mirror_window(app);
+    }
+    move_cursor_to_mirror_center(app);
+    if state.move_enabled.load(Ordering::SeqCst) {
+        start_pointer_tracking(app.clone());
+    }
+}
+
+fn release_toggle_shortcut(app: &AppHandle) {
+    let state = app.state::<MirrorState>();
+    state.shortcut_held.store(false, Ordering::SeqCst);
+
+    let should_hide = state
+        .toggle_press_started_visible
+        .load(Ordering::SeqCst)
+        && !state.moved_while_shortcut_held.load(Ordering::SeqCst);
+
+    if should_hide {
+        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        if *mode == DisplayMode::Toggled {
+            *mode = DisplayMode::Hidden;
+            drop(mode);
+            hide_mirror_window(app);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -381,8 +441,9 @@ pub fn run() {
                     );
                     if shortcut == &hold_shortcut {
                         if app.state::<MirrorState>().toggle_mode.load(Ordering::SeqCst) {
-                            if event.state() == ShortcutState::Pressed {
-                                toggle_mirror(app);
+                            match event.state() {
+                                ShortcutState::Pressed => press_toggle_shortcut(app),
+                                ShortcutState::Released => release_toggle_shortcut(app),
                             }
                         } else {
                             match event.state() {
