@@ -8,6 +8,7 @@ type Settings = {
   cameraId: string;
   mirrored: boolean;
   size: number;
+  sizeDefaultVersion: number;
   moveEnabled: boolean;
   position?: { x: number; y: number };
 };
@@ -15,7 +16,8 @@ type Settings = {
 const DEFAULT_SETTINGS: Settings = {
   cameraId: "",
   mirrored: true,
-  size: 600,
+  size: 180,
+  sizeDefaultVersion: 2,
   moveEnabled: true,
 };
 
@@ -33,10 +35,15 @@ async function loadSettings(): Promise<void> {
     autoSave: 150,
     defaults: { settings: DEFAULT_SETTINGS },
   });
+  const savedSettings = await store.get<Partial<Settings>>("settings");
   settings = {
     ...DEFAULT_SETTINGS,
-    ...(await store.get<Partial<Settings>>("settings")),
+    ...savedSettings,
   };
+  // v0.1.0 の初期値 600px を使っていた試作版だけ、新しい小型初期値へ移行する。
+  if (!savedSettings?.sizeDefaultVersion && savedSettings?.size === 600) {
+    settings.size = DEFAULT_SETTINGS.size;
+  }
   await saveSettings();
 }
 
@@ -115,13 +122,13 @@ function renderSettings(): void {
       <section>
         <h2>ミラー</h2>
         <label>長辺 <output id="size-value"></output> px
-          <input id="size-range" type="range" min="320" max="1000" step="10" />
+          <input id="size-range" type="range" min="120" max="1000" step="10" />
         </label>
         <div class="presets" aria-label="サイズプリセット">
+          <button type="button" data-size="120">120</button>
+          <button type="button" data-size="180">180</button>
+          <button type="button" data-size="240">240</button>
           <button type="button" data-size="320">320</button>
-          <button type="button" data-size="480">480</button>
-          <button type="button" data-size="600">600</button>
-          <button type="button" data-size="800">800</button>
         </div>
         <label class="check"><input id="mirror-toggle" type="checkbox" /> 左右を反転する</label>
         <label class="check"><input id="move-toggle" type="checkbox" /> ショートカット中のマウス移動で位置を変える</label>

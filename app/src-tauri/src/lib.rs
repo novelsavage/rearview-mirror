@@ -46,7 +46,7 @@ fn set_move_enabled(state: State<'_, MirrorState>, enabled: bool) {
 
 #[tauri::command]
 fn set_mirror_size(app: AppHandle, longest_edge: u32) -> Result<(), String> {
-    let width = longest_edge.clamp(320, 1000);
+    let width = longest_edge.clamp(120, 1000);
     let height = (width as f64 * 9.0 / 16.0).round() as u32;
     mirror_window(&app)?
         .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(width, height)))
