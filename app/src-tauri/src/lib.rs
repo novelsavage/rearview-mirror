@@ -1,12 +1,15 @@
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     thread,
     time::Duration,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewUrl,
     WebviewWindowBuilder, WindowEvent,
@@ -29,6 +32,16 @@ const MIRROR_ASPECT_RATIO: f64 = 4.0;
 struct MirrorState {
     shortcut_held: AtomicBool,
     move_enabled: AtomicBool,
+    mirrored: AtomicBool,
+    grayscale: AtomicBool,
+    display_mode: Mutex<DisplayMode>,
+}
+
+#[derive(PartialEq)]
+enum DisplayMode {
+    Hidden,
+    Held,
+    Toggled,
 }
 
 impl Default for MirrorState {
@@ -36,6 +49,9 @@ impl Default for MirrorState {
         Self {
             shortcut_held: AtomicBool::new(false),
             move_enabled: AtomicBool::new(true),
+            mirrored: AtomicBool::new(true),
+            grayscale: AtomicBool::new(false),
+            display_mode: Mutex::new(DisplayMode::Hidden),
         }
     }
 }
@@ -44,6 +60,19 @@ impl Default for MirrorState {
 struct SavedPosition {
     x: i32,
     y: i32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct DisplayOptions {
+    mirrored: bool,
+    grayscale: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct TrayOptions {
+    mirrored: bool,
+    grayscale: bool,
+    move_enabled: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -66,6 +95,12 @@ fn taskbar_bounds() -> Option<(i32, i32, i32, i32)> {
 #[tauri::command]
 fn set_move_enabled(state: State<'_, MirrorState>, enabled: bool) {
     state.move_enabled.store(enabled, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn set_display_options(state: State<'_, MirrorState>, options: DisplayOptions) {
+    state.mirrored.store(options.mirrored, Ordering::SeqCst);
+    state.grayscale.store(options.grayscale, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -159,6 +194,20 @@ fn cursor_position() -> Option<PhysicalPosition<i32>> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn move_cursor_to_mirror_center(app: &AppHandle) {
+    if let Ok(window) = mirror_window(app) {
+        if let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) {
+            let x = position.x + size.width as i32 / 2;
+            let y = position.y + size.height as i32 / 2;
+            let _ = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos(x, y) };
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn move_cursor_to_mirror_center(_app: &AppHandle) {}
+
 #[cfg(not(target_os = "windows"))]
 fn cursor_position() -> Option<PhysicalPosition<i32>> {
     None
@@ -198,27 +247,14 @@ fn start_pointer_tracking(app: AppHandle) {
     });
 }
 
-fn show_mirror(app: &AppHandle) {
-    let state = app.state::<MirrorState>();
-    if state.shortcut_held.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
+fn show_mirror_window(app: &AppHandle) {
     if let Ok(window) = mirror_window(app) {
         let _ = window.show();
     }
     let _ = app.emit_to(MIRROR_LABEL, "mirror:show", ());
-
-    if state.move_enabled.load(Ordering::SeqCst) {
-        start_pointer_tracking(app.clone());
-    }
 }
 
-fn hide_mirror(app: &AppHandle) {
-    app.state::<MirrorState>()
-        .shortcut_held
-        .store(false, Ordering::SeqCst);
-
+fn hide_mirror_window(app: &AppHandle) {
     if let Ok(window) = mirror_window(app) {
         if let Ok(position) = window.outer_position() {
             let _ = app.emit_to(
@@ -234,6 +270,79 @@ fn hide_mirror(app: &AppHandle) {
     let _ = app.emit_to(MIRROR_LABEL, "mirror:hide", ());
 }
 
+fn show_held_mirror(app: &AppHandle) {
+    let state = app.state::<MirrorState>();
+    let should_show = {
+        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        if *mode == DisplayMode::Hidden {
+            *mode = DisplayMode::Held;
+            true
+        } else {
+            false
+        }
+    };
+
+    state.shortcut_held.store(true, Ordering::SeqCst);
+    if should_show {
+        show_mirror_window(app);
+    }
+    move_cursor_to_mirror_center(app);
+
+    if state.move_enabled.load(Ordering::SeqCst) {
+        start_pointer_tracking(app.clone());
+    }
+}
+
+fn release_held_mirror(app: &AppHandle) {
+    let state = app.state::<MirrorState>();
+    state.shortcut_held.store(false, Ordering::SeqCst);
+    let should_hide = {
+        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        if *mode == DisplayMode::Held {
+            *mode = DisplayMode::Hidden;
+            true
+        } else {
+            false
+        }
+    };
+    if should_hide {
+        hide_mirror_window(app);
+    }
+}
+
+fn toggle_mirror(app: &AppHandle) {
+    let state = app.state::<MirrorState>();
+    state.shortcut_held.store(false, Ordering::SeqCst);
+    let should_show = {
+        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        match *mode {
+            DisplayMode::Hidden | DisplayMode::Held => {
+                *mode = DisplayMode::Toggled;
+                true
+            }
+            DisplayMode::Toggled => {
+                *mode = DisplayMode::Hidden;
+                false
+            }
+        }
+    };
+    if should_show {
+        show_mirror_window(app);
+    } else {
+        hide_mirror_window(app);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn space_key_is_held() -> bool {
+    (unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x20) }) < 0
+}
+
+#[cfg(not(target_os = "windows"))]
+fn space_key_is_held() -> bool {
+    false
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -241,15 +350,24 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    let mirror_shortcut = Shortcut::new(
+                    let hold_shortcut = Shortcut::new(
                         Some(Modifiers::CONTROL | Modifiers::ALT),
                         Code::Space,
                     );
-                    if shortcut == &mirror_shortcut {
+                    let toggle_shortcut = Shortcut::new(
+                        Some(Modifiers::CONTROL | Modifiers::ALT),
+                        Code::Enter,
+                    );
+                    if shortcut == &hold_shortcut {
                         match event.state() {
-                            ShortcutState::Pressed => show_mirror(app),
-                            ShortcutState::Released => hide_mirror(app),
+                            ShortcutState::Pressed => show_held_mirror(app),
+                            ShortcutState::Released => release_held_mirror(app),
                         }
+                    } else if shortcut == &toggle_shortcut
+                        && event.state() == ShortcutState::Pressed
+                        && space_key_is_held()
+                    {
+                        toggle_mirror(app);
                     }
                 })
                 .build(),
@@ -258,6 +376,8 @@ pub fn run() {
         .setup(|app| {
             let mirror_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
             app.global_shortcut().register(mirror_shortcut)?;
+            let toggle_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Enter);
+            app.global_shortcut().register(toggle_shortcut)?;
 
             let is_first_launch = app
                 .path()
@@ -267,20 +387,48 @@ pub fn run() {
 
             WebviewWindowBuilder::new(app, SETTINGS_LABEL, WebviewUrl::App("index.html".into()))
                 .title("Rearview Mirror 設定")
-                .inner_size(420.0, 540.0)
-                .min_inner_size(360.0, 460.0)
+                .inner_size(360.0, 420.0)
+                .min_inner_size(320.0, 360.0)
                 .resizable(true)
                 .visible(is_first_launch)
                 .build()?;
 
-            let settings_item = MenuItem::with_id(app, "settings", "設定", true, None::<&str>)?;
+            let toggle_item = MenuItem::with_id(app, "toggle", "表示を切り替え", true, None::<&str>)?;
+            let mirrored_item = CheckMenuItem::with_id(app, "mirrored", "左右を反転", true, true, None::<&str>)?;
+            let grayscale_item = CheckMenuItem::with_id(app, "grayscale", "白黒で表示", true, false, None::<&str>)?;
+            let move_item = CheckMenuItem::with_id(app, "move", "マウス移動を有効にする", true, true, None::<&str>)?;
+            let settings_item = MenuItem::with_id(app, "settings", "カメラ・サイズ設定…", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&settings_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&toggle_item, &mirrored_item, &grayscale_item, &move_item, &settings_item, &quit_item])?;
+            let mirrored_item_for_event = mirrored_item.clone();
+            let grayscale_item_for_event = grayscale_item.clone();
+            let move_item_for_event = move_item.clone();
             TrayIconBuilder::with_id("rearview-mirror-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Rearview Mirror")
                 .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(move |app, event| match event.id.as_ref() {
+                    "toggle" => toggle_mirror(app),
+                    "mirrored" | "grayscale" | "move" => {
+                        let state = app.state::<MirrorState>();
+                        if event.id.as_ref() == "mirrored" {
+                            let checked = !state.mirrored.fetch_xor(true, Ordering::SeqCst);
+                            let _ = mirrored_item_for_event.set_checked(checked);
+                        } else if event.id.as_ref() == "grayscale" {
+                            let checked = !state.grayscale.fetch_xor(true, Ordering::SeqCst);
+                            let _ = grayscale_item_for_event.set_checked(checked);
+                        } else {
+                            let checked = !state.move_enabled.fetch_xor(true, Ordering::SeqCst);
+                            let _ = move_item_for_event.set_checked(checked);
+                        }
+                        let options = TrayOptions {
+                            mirrored: state.mirrored.load(Ordering::SeqCst),
+                            grayscale: state.grayscale.load(Ordering::SeqCst),
+                            move_enabled: state.move_enabled.load(Ordering::SeqCst),
+                        };
+                        let _ = app.emit_to(MIRROR_LABEL, "mirror:tray-options", options.clone());
+                        let _ = app.emit_to(SETTINGS_LABEL, "settings:tray-options", options);
+                    }
                     "settings" => show_settings(app),
                     "quit" => app.exit(0),
                     _ => {}
@@ -291,6 +439,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             set_move_enabled,
+            set_display_options,
             set_mirror_size,
             get_taskbar_mirror_size,
             get_taskbar_mirror_position,

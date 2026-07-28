@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import "./styles.css";
@@ -60,6 +60,19 @@ function stopCamera(): void {
   if (video) video.srcObject = null;
 }
 
+function applyVisualSettings(): void {
+  const video = document.querySelector<HTMLVideoElement>("#mirror-video");
+  video?.classList.toggle("is-mirrored", settings.mirrored);
+  video?.classList.toggle("is-grayscale", settings.grayscale);
+}
+
+async function notifyMirrorSettingsChanged(): Promise<void> {
+  await invoke("set_display_options", {
+    options: { mirrored: settings.mirrored, grayscale: settings.grayscale },
+  });
+  await emitTo("mirror", "mirror:settings-changed", settings);
+}
+
 async function startCamera(): Promise<void> {
   if (activeStream) return;
   const video = document.querySelector<HTMLVideoElement>("#mirror-video");
@@ -80,9 +93,7 @@ async function startCamera(): Promise<void> {
 
 function renderMirror(): void {
   document.body.innerHTML = '<video id="mirror-video" autoplay playsinline aria-label="後方確認用カメラ映像"></video>';
-  const video = document.querySelector<HTMLVideoElement>("#mirror-video")!;
-  video.classList.toggle("is-mirrored", settings.mirrored);
-  video.classList.toggle("is-grayscale", settings.grayscale);
+  applyVisualSettings();
 
   void listen("mirror:show", async () => {
     try {
@@ -102,6 +113,27 @@ function renderMirror(): void {
     await saveSettings();
   });
 
+  void listen<Settings>("mirror:settings-changed", async (event) => {
+    const shouldRestartCamera = settings.cameraId !== event.payload.cameraId && Boolean(activeStream);
+    settings = { ...settings, ...event.payload };
+    applyVisualSettings();
+    if (shouldRestartCamera) {
+      stopCamera();
+      try {
+        await startCamera();
+      } catch (error) {
+        console.error("カメラを切り替えられませんでした", error);
+      }
+    }
+  });
+
+  void listen<{ mirrored: boolean; grayscale: boolean; move_enabled: boolean }>("mirror:tray-options", (event) => {
+    settings.mirrored = event.payload.mirrored;
+    settings.grayscale = event.payload.grayscale;
+    settings.moveEnabled = event.payload.move_enabled;
+    applyVisualSettings();
+  });
+
   window.addEventListener("keydown", async (event) => {
     if (event.key === "Escape") {
       stopCamera();
@@ -113,21 +145,17 @@ function renderMirror(): void {
 function renderSettings(): void {
   document.body.innerHTML = `
     <main class="settings">
-      <header>
-        <p class="eyebrow">REARVIEW MIRROR</p>
-        <h1>設定</h1>
-        <p class="description">ミラー本体には映像以外を表示しません。表示は <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd> を押している間だけです。</p>
-      </header>
-      <section>
-        <h2>カメラ</h2>
+      <header><h1>Rearview Mirror</h1><p>長押し: <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd>　トグル: 長押し中に <kbd>Enter</kbd></p></header>
+      <fieldset>
+        <legend>カメラ</legend>
         <label>使用するカメラ
           <select id="camera-select"><option value="">標準のカメラ</option></select>
         </label>
         <button id="grant-camera" type="button">カメラを確認・許可する</button>
         <p class="hint">音声は取得しません。映像の保存や送信も行いません。</p>
-      </section>
-      <section>
-        <h2>ミラー</h2>
+      </fieldset>
+      <fieldset>
+        <legend>ミラー</legend>
         <label>長辺 <output id="size-value"></output> px
           <input id="size-range" type="range" min="128" max="1600" step="10" />
         </label>
@@ -141,8 +169,8 @@ function renderSettings(): void {
         <label class="check"><input id="grayscale-toggle" type="checkbox" /> 白黒で表示する</label>
         <label class="check"><input id="move-toggle" type="checkbox" /> ショートカット中のマウス移動で位置を変える</label>
         <button id="reset-position" class="secondary" type="button">位置をタスクバー内に戻す</button>
-      </section>
-      <footer>設定はタスクトレイのRearview Mirrorアイコンからいつでも開けます。</footer>
+      </fieldset>
+      <footer>普段の切替はタスクトレイから行えます。</footer>
     </main>`;
 
   const cameraSelect = document.querySelector<HTMLSelectElement>("#camera-select")!;
@@ -167,6 +195,7 @@ function renderSettings(): void {
     sizeRange.value = String(size);
     await invoke("set_mirror_size", { longestEdge: size });
     await saveSettings();
+    await notifyMirrorSettingsChanged();
   };
 
   const refreshCameras = async (): Promise<void> => {
@@ -187,6 +216,7 @@ function renderSettings(): void {
   cameraSelect.addEventListener("change", async () => {
     settings.cameraId = cameraSelect.value;
     await saveSettings();
+    await notifyMirrorSettingsChanged();
   });
   sizeRange.addEventListener("input", () => void applySize(Number(sizeRange.value)));
   document.querySelectorAll<HTMLButtonElement>("[data-size]").forEach((button) => {
@@ -195,21 +225,32 @@ function renderSettings(): void {
   mirrorToggle.addEventListener("change", async () => {
     settings.mirrored = mirrorToggle.checked;
     await saveSettings();
+    await notifyMirrorSettingsChanged();
   });
   grayscaleToggle.addEventListener("change", async () => {
     settings.grayscale = grayscaleToggle.checked;
     await saveSettings();
+    await notifyMirrorSettingsChanged();
   });
   moveToggle.addEventListener("change", async () => {
     settings.moveEnabled = moveToggle.checked;
     await invoke("set_move_enabled", { enabled: settings.moveEnabled });
     await saveSettings();
+    await notifyMirrorSettingsChanged();
   });
   document.querySelector("#reset-position")?.addEventListener("click", async () => {
     settings.position = await invoke<{ x: number; y: number }>("get_taskbar_mirror_position", {
       width: settings.size,
     });
     await invoke("set_mirror_position", settings.position);
+    await saveSettings();
+  });
+
+  void listen<{ mirrored: boolean; grayscale: boolean; move_enabled: boolean }>("settings:tray-options", async (event) => {
+    settings.mirrored = event.payload.mirrored;
+    settings.grayscale = event.payload.grayscale;
+    settings.moveEnabled = event.payload.move_enabled;
+    syncForm();
     await saveSettings();
   });
 
@@ -227,6 +268,7 @@ async function main(): Promise<void> {
     }
     await invoke("set_mirror_size", { longestEdge: settings.size });
     await invoke("set_move_enabled", { enabled: settings.moveEnabled });
+    await notifyMirrorSettingsChanged();
     renderMirror();
   } else {
     renderSettings();
