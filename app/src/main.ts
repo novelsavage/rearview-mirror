@@ -7,6 +7,7 @@ import "./styles.css";
 type Settings = {
   cameraId: string;
   mirrored: boolean;
+  grayscale: boolean;
   size: number;
   sizeDefaultVersion: number;
   moveEnabled: boolean;
@@ -16,8 +17,9 @@ type Settings = {
 const DEFAULT_SETTINGS: Settings = {
   cameraId: "",
   mirrored: true,
-  size: 85,
-  sizeDefaultVersion: 3,
+  grayscale: false,
+  size: 192,
+  sizeDefaultVersion: 4,
   moveEnabled: true,
 };
 
@@ -40,9 +42,12 @@ async function loadSettings(): Promise<void> {
     ...DEFAULT_SETTINGS,
     ...savedSettings,
   };
-  // 試作版の固定サイズから、実際のタスクバーの高さに合わせる初期値へ移行する。
+  // 試作版の固定サイズから、タスクバー高に合わせた横長ミラーへ移行する。
   if ((savedSettings?.sizeDefaultVersion ?? 0) < DEFAULT_SETTINGS.sizeDefaultVersion) {
     settings.size = await invoke<number>("get_taskbar_mirror_size");
+    settings.position = await invoke<{ x: number; y: number }>("get_taskbar_mirror_position", {
+      width: settings.size,
+    });
     settings.sizeDefaultVersion = DEFAULT_SETTINGS.sizeDefaultVersion;
   }
   await saveSettings();
@@ -77,6 +82,7 @@ function renderMirror(): void {
   document.body.innerHTML = '<video id="mirror-video" autoplay playsinline aria-label="後方確認用カメラ映像"></video>';
   const video = document.querySelector<HTMLVideoElement>("#mirror-video")!;
   video.classList.toggle("is-mirrored", settings.mirrored);
+  video.classList.toggle("is-grayscale", settings.grayscale);
 
   void listen("mirror:show", async () => {
     try {
@@ -123,17 +129,18 @@ function renderSettings(): void {
       <section>
         <h2>ミラー</h2>
         <label>長辺 <output id="size-value"></output> px
-          <input id="size-range" type="range" min="64" max="1000" step="10" />
+          <input id="size-range" type="range" min="128" max="1600" step="10" />
         </label>
         <div class="presets" aria-label="サイズプリセット">
-          <button type="button" data-size="64">64</button>
-          <button type="button" data-size="85">85</button>
-          <button type="button" data-size="120">120</button>
-          <button type="button" data-size="180">180</button>
+          <button type="button" data-size="128">128</button>
+          <button type="button" data-size="192">192</button>
+          <button type="button" data-size="256">256</button>
+          <button type="button" data-size="320">320</button>
         </div>
         <label class="check"><input id="mirror-toggle" type="checkbox" /> 左右を反転する</label>
+        <label class="check"><input id="grayscale-toggle" type="checkbox" /> 白黒で表示する</label>
         <label class="check"><input id="move-toggle" type="checkbox" /> ショートカット中のマウス移動で位置を変える</label>
-        <button id="reset-position" class="secondary" type="button">位置を右上に戻す</button>
+        <button id="reset-position" class="secondary" type="button">位置をタスクバー内に戻す</button>
       </section>
       <footer>設定はタスクトレイのRearview Mirrorアイコンからいつでも開けます。</footer>
     </main>`;
@@ -142,12 +149,14 @@ function renderSettings(): void {
   const sizeRange = document.querySelector<HTMLInputElement>("#size-range")!;
   const sizeValue = document.querySelector<HTMLOutputElement>("#size-value")!;
   const mirrorToggle = document.querySelector<HTMLInputElement>("#mirror-toggle")!;
+  const grayscaleToggle = document.querySelector<HTMLInputElement>("#grayscale-toggle")!;
   const moveToggle = document.querySelector<HTMLInputElement>("#move-toggle")!;
 
   const syncForm = (): void => {
     sizeRange.value = String(settings.size);
     sizeValue.value = String(settings.size);
     mirrorToggle.checked = settings.mirrored;
+    grayscaleToggle.checked = settings.grayscale;
     moveToggle.checked = settings.moveEnabled;
     cameraSelect.value = settings.cameraId;
   };
@@ -187,14 +196,20 @@ function renderSettings(): void {
     settings.mirrored = mirrorToggle.checked;
     await saveSettings();
   });
+  grayscaleToggle.addEventListener("change", async () => {
+    settings.grayscale = grayscaleToggle.checked;
+    await saveSettings();
+  });
   moveToggle.addEventListener("change", async () => {
     settings.moveEnabled = moveToggle.checked;
     await invoke("set_move_enabled", { enabled: settings.moveEnabled });
     await saveSettings();
   });
   document.querySelector("#reset-position")?.addEventListener("click", async () => {
-    settings.position = undefined;
-    await invoke("set_mirror_position", { x: window.screen.availWidth - settings.size - 24, y: 24 });
+    settings.position = await invoke<{ x: number; y: number }>("get_taskbar_mirror_position", {
+      width: settings.size,
+    });
+    await invoke("set_mirror_position", settings.position);
     await saveSettings();
   });
 

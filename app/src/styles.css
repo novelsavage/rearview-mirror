@@ -13,11 +13,13 @@ html, body { margin: 0; min-height: 100%; }
   display: block;
   width: 100vw;
   height: 100vh;
-  object-fit: cover;
+  /* 4:1のミラー全体へ非等方に拡大し、FPSのストレッチ表示のように横方向を見分けやすくする。 */
+  object-fit: fill;
   background: #000;
 }
 
 #mirror-video.is-mirrored { transform: scaleX(-1); }
+#mirror-video.is-grayscale { filter: grayscale(1); }
 
 .settings {
   display: grid;

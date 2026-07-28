@@ -15,10 +15,10 @@
       {
         "label": "mirror",
         "title": "Rearview Mirror",
-        "width": 85,
+        "width": 192,
         "height": 48,
-        "minWidth": 64,
-        "minHeight": 36,
+        "minWidth": 128,
+        "minHeight": 32,
         "resizable": false,
         "decorations": false,
         "alwaysOnTop": true,

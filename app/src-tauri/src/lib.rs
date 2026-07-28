@@ -24,6 +24,7 @@ use windows_sys::Win32::{
 
 const MIRROR_LABEL: &str = "mirror";
 const SETTINGS_LABEL: &str = "settings";
+const MIRROR_ASPECT_RATIO: f64 = 4.0;
 
 struct MirrorState {
     shortcut_held: AtomicBool,
@@ -45,6 +46,23 @@ struct SavedPosition {
     y: i32,
 }
 
+#[cfg(target_os = "windows")]
+fn taskbar_bounds() -> Option<(i32, i32, i32, i32)> {
+    let mut taskbar = unsafe { std::mem::zeroed::<APPBARDATA>() };
+    taskbar.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+
+    if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut taskbar) } != 0 {
+        Some((
+            taskbar.rc.left,
+            taskbar.rc.top,
+            taskbar.rc.right,
+            taskbar.rc.bottom,
+        ))
+    } else {
+        None
+    }
+}
+
 #[tauri::command]
 fn set_move_enabled(state: State<'_, MirrorState>, enabled: bool) {
     state.move_enabled.store(enabled, Ordering::SeqCst);
@@ -52,34 +70,63 @@ fn set_move_enabled(state: State<'_, MirrorState>, enabled: bool) {
 
 #[tauri::command]
 fn set_mirror_size(app: AppHandle, longest_edge: u32) -> Result<(), String> {
-    let width = longest_edge.clamp(64, 1000);
-    let height = (width as f64 * 9.0 / 16.0).round() as u32;
+    let width = longest_edge.clamp(128, 1600);
+    let height = (width as f64 / MIRROR_ASPECT_RATIO).round() as u32;
     mirror_window(&app)?
         .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(width, height)))
         .map_err(|error| error.to_string())
 }
 
-/// 16:9 のミラーの短辺が、Windows タスクバーの厚みと等しくなる長辺を返す。
+/// 横に引き延ばした4:1ミラーの短辺が、Windows タスクバーの厚みと等しくなる幅を返す。
 #[cfg(target_os = "windows")]
 #[tauri::command]
 fn get_taskbar_mirror_size() -> u32 {
-    let mut taskbar = unsafe { std::mem::zeroed::<APPBARDATA>() };
-    taskbar.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
-
-    if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut taskbar) } != 0 {
-        let width = (taskbar.rc.right - taskbar.rc.left).unsigned_abs();
-        let height = (taskbar.rc.bottom - taskbar.rc.top).unsigned_abs();
+    if let Some((left, top, right, bottom)) = taskbar_bounds() {
+        let width = (right - left).unsigned_abs();
+        let height = (bottom - top).unsigned_abs();
         let taskbar_thickness = width.min(height);
-        return (taskbar_thickness.saturating_mul(16) / 9).clamp(64, 1000);
+        return (taskbar_thickness as f64 * MIRROR_ASPECT_RATIO).round() as u32;
     }
 
-    85
+    192
 }
 
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
 fn get_taskbar_mirror_size() -> u32 {
-    85
+    192
+}
+
+/// タスクバーの右端にミラーを収める初期位置を返す。
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn get_taskbar_mirror_position(width: u32) -> SavedPosition {
+    let width = width.clamp(128, 1600) as i32;
+    let height = (width as f64 / MIRROR_ASPECT_RATIO).round() as i32;
+
+    if let Some((left, top, right, bottom)) = taskbar_bounds() {
+        let taskbar_width = right - left;
+        let taskbar_height = bottom - top;
+        return if taskbar_width >= taskbar_height {
+            SavedPosition {
+                x: right - width,
+                y: top,
+            }
+        } else {
+            SavedPosition {
+                x: left,
+                y: bottom - height,
+            }
+        };
+    }
+
+    SavedPosition { x: 0, y: 0 }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn get_taskbar_mirror_position(_width: u32) -> SavedPosition {
+    SavedPosition { x: 0, y: 0 }
 }
 
 #[tauri::command]
@@ -246,6 +293,7 @@ pub fn run() {
             set_move_enabled,
             set_mirror_size,
             get_taskbar_mirror_size,
+            get_taskbar_mirror_position,
             set_mirror_position
         ])
         .on_window_event(|window, event| {
