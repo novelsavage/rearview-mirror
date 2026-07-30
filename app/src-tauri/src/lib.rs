@@ -14,6 +14,7 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewUrl,
     WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg(target_os = "windows")]
@@ -172,7 +173,9 @@ fn set_mirror_size(app: AppHandle, longest_edge: u32) -> Result<(), String> {
     let width = longest_edge.clamp(128, 1600);
     let height = (width as f64 / MIRROR_ASPECT_RATIO).round() as u32;
     mirror_window(&app)?
-        .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(width, height)))
+        .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+            width, height,
+        )))
         .map_err(|error| error.to_string())
 }
 
@@ -338,17 +341,7 @@ fn apply_taskbar_overlay(hwnd: isize, refresh_frame: bool) {
     if refresh_frame {
         flags |= SWP_FRAMECHANGED;
     }
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            flags,
-        )
-    };
+    unsafe { SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags) };
 }
 
 #[cfg(target_os = "windows")]
@@ -397,10 +390,10 @@ fn schedule_overlay_reposition() {}
 
 #[cfg(target_os = "windows")]
 fn install_taskbar_event_hooks() {
-    use windows_sys::Win32::{
-        UI::{
-            Accessibility::SetWinEventHook,
-            WindowsAndMessaging::{EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT},
+    use windows_sys::Win32::UI::{
+        Accessibility::SetWinEventHook,
+        WindowsAndMessaging::{
+            EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
         },
     };
 
@@ -483,7 +476,10 @@ fn hide_mirror_window(app: &AppHandle) {
 fn show_held_mirror(app: &AppHandle) {
     let state = app.state::<MirrorState>();
     let should_show = {
-        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        let mut mode = state
+            .display_mode
+            .lock()
+            .expect("表示状態のロックに失敗しました");
         if *mode == DisplayMode::Hidden {
             *mode = DisplayMode::Held;
             true
@@ -507,7 +503,10 @@ fn release_held_mirror(app: &AppHandle) {
     let state = app.state::<MirrorState>();
     state.shortcut_held.store(false, Ordering::SeqCst);
     let should_hide = {
-        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        let mut mode = state
+            .display_mode
+            .lock()
+            .expect("表示状態のロックに失敗しました");
         if *mode == DisplayMode::Held {
             *mode = DisplayMode::Hidden;
             true
@@ -524,7 +523,10 @@ fn toggle_mirror(app: &AppHandle) {
     let state = app.state::<MirrorState>();
     state.shortcut_held.store(false, Ordering::SeqCst);
     let should_show = {
-        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        let mut mode = state
+            .display_mode
+            .lock()
+            .expect("表示状態のロックに失敗しました");
         match *mode {
             DisplayMode::Hidden | DisplayMode::Held => {
                 *mode = DisplayMode::Toggled;
@@ -546,7 +548,10 @@ fn toggle_mirror(app: &AppHandle) {
 fn press_toggle_shortcut(app: &AppHandle) {
     let state = app.state::<MirrorState>();
     let (should_show, started_visible) = {
-        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        let mut mode = state
+            .display_mode
+            .lock()
+            .expect("表示状態のロックに失敗しました");
         match *mode {
             DisplayMode::Hidden => {
                 *mode = DisplayMode::Toggled;
@@ -581,13 +586,14 @@ fn release_toggle_shortcut(app: &AppHandle) {
     let state = app.state::<MirrorState>();
     state.shortcut_held.store(false, Ordering::SeqCst);
 
-    let should_hide = state
-        .toggle_press_started_visible
-        .load(Ordering::SeqCst)
+    let should_hide = state.toggle_press_started_visible.load(Ordering::SeqCst)
         && !state.moved_while_shortcut_held.load(Ordering::SeqCst);
 
     if should_hide {
-        let mut mode = state.display_mode.lock().expect("表示状態のロックに失敗しました");
+        let mut mode = state
+            .display_mode
+            .lock()
+            .expect("表示状態のロックに失敗しました");
         if *mode == DisplayMode::Toggled {
             *mode = DisplayMode::Hidden;
             drop(mode);
@@ -603,12 +609,14 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    let hold_shortcut = Shortcut::new(
-                        Some(Modifiers::CONTROL | Modifiers::ALT),
-                        Code::Space,
-                    );
+                    let hold_shortcut =
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
                     if shortcut == &hold_shortcut {
-                        if app.state::<MirrorState>().toggle_mode.load(Ordering::SeqCst) {
+                        if app
+                            .state::<MirrorState>()
+                            .toggle_mode
+                            .load(Ordering::SeqCst)
+                        {
                             match event.state() {
                                 ShortcutState::Pressed => press_toggle_shortcut(app),
                                 ShortcutState::Released => release_toggle_shortcut(app),
@@ -623,8 +631,15 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
+            // Windowsではユーザーのログオン時に、このアプリをトレイ常駐として起動する。
+            app.autolaunch().enable()?;
+
             #[cfg(target_os = "windows")]
             {
                 let overlay = TaskbarOverlayState::default();
@@ -635,7 +650,8 @@ pub fn run() {
                 }
                 app.manage(overlay);
             }
-            let mirror_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
+            let mirror_shortcut =
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
             app.global_shortcut().register(mirror_shortcut)?;
 
             let is_first_launch = app
@@ -652,14 +668,43 @@ pub fn run() {
                 .visible(is_first_launch)
                 .build()?;
 
-            let toggle_item = MenuItem::with_id(app, "toggle", "表示を切り替え", true, None::<&str>)?;
-            let mirrored_item = CheckMenuItem::with_id(app, "mirrored", "左右を反転", true, true, None::<&str>)?;
-            let grayscale_item = CheckMenuItem::with_id(app, "grayscale", "白黒で表示", true, false, None::<&str>)?;
-            let move_item = CheckMenuItem::with_id(app, "move", "マウス移動を有効にする", true, true, None::<&str>)?;
-            let toggle_mode_item = CheckMenuItem::with_id(app, "toggle-mode", "ショートカットを切替表示にする", true, true, None::<&str>)?;
-            let settings_item = MenuItem::with_id(app, "settings", "カメラ・サイズ設定…", true, None::<&str>)?;
+            let toggle_item =
+                MenuItem::with_id(app, "toggle", "表示を切り替え", true, None::<&str>)?;
+            let mirrored_item =
+                CheckMenuItem::with_id(app, "mirrored", "左右を反転", true, true, None::<&str>)?;
+            let grayscale_item =
+                CheckMenuItem::with_id(app, "grayscale", "白黒で表示", true, false, None::<&str>)?;
+            let move_item = CheckMenuItem::with_id(
+                app,
+                "move",
+                "マウス移動を有効にする",
+                true,
+                true,
+                None::<&str>,
+            )?;
+            let toggle_mode_item = CheckMenuItem::with_id(
+                app,
+                "toggle-mode",
+                "ショートカットを切替表示にする",
+                true,
+                true,
+                None::<&str>,
+            )?;
+            let settings_item =
+                MenuItem::with_id(app, "settings", "カメラ・サイズ設定…", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle_item, &mirrored_item, &grayscale_item, &move_item, &toggle_mode_item, &settings_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &toggle_item,
+                    &mirrored_item,
+                    &grayscale_item,
+                    &move_item,
+                    &toggle_mode_item,
+                    &settings_item,
+                    &quit_item,
+                ],
+            )?;
             let mirrored_item_for_event = mirrored_item.clone();
             let grayscale_item_for_event = grayscale_item.clone();
             let move_item_for_event = move_item.clone();
